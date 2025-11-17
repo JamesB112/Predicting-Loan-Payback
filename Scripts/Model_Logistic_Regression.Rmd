@@ -1,0 +1,131 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+ 
+1. Load Data
+
+```{r}
+setwd("~/GitHub/Predicting-Loan-Payback/Scripts")
+
+# Clear workspace
+rm(list = ls())
+
+# Load required packages
+library(tidyverse)     # for data manipulation
+library(caret)         # for data splitting and evaluation
+library(MASS)          # for stepAIC (stepwise logistic regression)
+
+# Read your CSV (change filename accordingly)
+df <- read.csv("../Data/Processed/PRD_Train_Test.csv")
+
+# Inspect structure
+str(df)
+summary(df)
+
+# Assume your target column is named "target"
+# (convert to factor if it’s binary)
+df$loan_paid_back <- as.factor(df$loan_paid_back)
+
+
+```
+
+2. Interactive Feaures
+
+
+```{r}
+
+# Let's assume you want pairwise interactions between numeric features
+# (You can adjust the set of columns as needed)
+
+numeric_features <- names(df)[sapply(df, is.numeric)]
+
+# Remove 'Id'
+remove_features <- c("id")  # replace with your column names
+
+# Keep only the ones you want
+numeric_features <- setdiff(numeric_features, remove_features)
+
+# Create interaction terms using formula syntax
+# This will create all pairwise interactions between numeric features
+interaction_formula <- as.formula(
+  paste("loan_paid_back ~ (", paste(numeric_features, collapse = " + "), ")^2")
+)
+
+```
+
+
+# 3. Stepwise Logistic Regression (AIC-based)
+
+```{r}
+# Get the train rows
+train_df <- df[df$source == "train",]
+
+# Remove the column
+train_df$source <- NULL
+train_df$id <- NULL
+
+# Fix the empty model
+empty_model <- glm(loan_paid_back ~ 1, data = train_df, family = binomial())
+
+
+# Fit the full model (main effects + interactions)
+full_model <- glm(loan_paid_back ~ ., data = train_df[, c("loan_paid_back", numeric_features)], family = binomial())
+
+# Perform stepwise selection using AIC (both directions)
+
+step_model <- stepAIC(
+  empty_model,             # start from intercept-only
+  scope = list(
+    lower = empty_model,   # minimum model
+    upper = full_model     # maximum model
+  ),
+  direction = "both",      # forward + backward
+  trace = TRUE             # print progress
+)
+
+
+
+# View the selected model summary
+summary(step_model)
+
+# Get the final set of selected variables
+selected_vars <- names(coef(step_model))[-1]  # exclude intercept
+cat("✅ Selected features:\n")
+```
+
+
+Save the features
+```{r}
+write.csv(data.frame(feature = selected_vars), "../Data/Processed/Logistic_Regression_Feature_Selection.csv", row.names = FALSE)
+```
+
+
+4. Predictions
+
+```{r}
+
+# Get the train rows
+test_df <- df[df$source != "train",]
+
+
+test_pred_df <- test_df[, selected_vars, drop = FALSE]  # only predictors
+
+
+# Predict
+pred_probs <- predict(step_model, newdata = test_pred_df, type = "response")
+
+# Class predictions (threshold 0.5)
+pred_class <- ifelse(pred_probs > 0.5, 1, 0)
+
+
+# Combine with IDs if you have them
+results <- data.frame(id = test_df$id, loan_paid_back = pred_class)
+
+# Save to CSV
+timestamp <- format(Sys.time(), "%Y%m%d%H%M%S")
+file_name <- paste0("../Results/Logistic_Regression_Feature_Selection_", timestamp, ".csv")
+write.csv(results, file_name, row.names = FALSE)
+```
+
+
